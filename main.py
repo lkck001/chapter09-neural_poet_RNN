@@ -9,6 +9,7 @@ import tqdm
 from torchnet import meter
 import ipdb
 import time
+import warnings
 
 
 class Config(object):
@@ -150,70 +151,85 @@ def train(**kwargs):
 
     # 获取数据
     data, word2ix, ix2word = get_data(opt)
-    print(f"Data shape after loading: {data.shape}")  # Check if data is empty
+    print(f"Data shape after loading: {data.shape}")
     data = t.from_numpy(data)
-    # data shape: [total_poems, max_length]
-    # - total_poems: number of poems in the dataset
-    # - max_length: maximum length of poems (padded with zeros)
-    # Each element is an integer index corresponding to a word in the vocabulary
+    
+    # Move model to device before creating optimizer
+    model = PoetryModel(len(word2ix), 128, 256)
+    model.to(device)
     
     dataloader = t.utils.data.DataLoader(
-        data, 
-        batch_size=opt.batch_size,  # Creates batches of opt.batch_size poems
-        shuffle=True,  # Randomly shuffles poems during training
-        num_workers=1   # Number of parallel workers for data loading
+        data,
+        batch_size=opt.batch_size,
+        shuffle=True,
+        num_workers=1
     )
-    # dataloader yields tensors of shape [batch_size, maxlen]
-    # where maxlen = 125 (from Config)
-
-    # 模型定义
-    model = PoetryModel(len(word2ix), 128, 256)
-    # Parameters:
-    # 1. len(word2ix): vocabulary size - number of unique characters/words in the dataset
-    # 2. 128: embedding dimension - size of the vector space where words are embedded
-    # 3. 256: hidden dimension - size of the hidden state in the RNN/LSTM
 
     # Estimate training time before starting
     print("\nEstimating training time...")
     total_batches = len(dataloader)
-    sample_batch = next(iter(dataloader))
-    sample_batch = sample_batch.long().transpose(1, 0).contiguous().to(device)
     
-    # Time one batch
-    start_time = time.time()
-    with t.no_grad():
-        input_, target = sample_batch[:-1, :], sample_batch[1:, :]
-        output, _ = model(input_)
-    batch_time = time.time() - start_time
+    # Time multiple batches for a more accurate estimate
+    num_test_batches = min(5, total_batches)  # Test with 5 batches or all if less
+    test_times = []
     
-    # Calculate estimates
-    estimated_epoch_time = batch_time * total_batches
-    estimated_total_time = estimated_epoch_time * opt.epoch
+    # Get iterator once
+    dataloader_iter = iter(dataloader)
     
-    print(f"\nTraining Time Estimates:")
-    print(f"Time per batch: {batch_time:.2f} seconds")
-    print(f"Estimated time per epoch: {estimated_epoch_time/60:.2f} minutes")
-    print(f"Estimated total training time: {estimated_total_time/3600:.2f} hours")
-    print(f"Number of batches per epoch: {total_batches}")
-    print(f"Total number of epochs: {opt.epoch}")
+    for _ in range(num_test_batches):
+        try:
+            start_time = time.time()
+            
+            # Get batch and process it
+            sample_batch = next(dataloader_iter)
+            sample_batch = sample_batch.long().transpose(1, 0).contiguous().to(device)
+            
+            with t.no_grad():
+                input_, target = sample_batch[:-1, :], sample_batch[1:, :]
+                output, _ = model(input_)
+                
+            batch_time = time.time() - start_time
+            test_times.append(batch_time)
+            
+        except StopIteration:
+            break
     
-    user_input = input("\nProceed with training? (y/n): ")
-    if user_input.lower() != 'y':
-        print("Training cancelled")
-        return
+    # # Calculate average batch time
+    # avg_batch_time = sum(test_times) / len(test_times)
+    
+    # # Calculate estimates
+    # estimated_epoch_time = avg_batch_time * total_batches
+    # estimated_total_time = estimated_epoch_time * opt.epoch
+    
+    # print(f"\nTraining Time Estimates (based on {len(test_times)} test batches):")
+    # print(f"Average time per batch: {avg_batch_time:.2f} seconds")
+    # print(f"Estimated time per epoch: {estimated_epoch_time/60:.2f} minutes")
+    # print(f"Estimated total training time: {estimated_total_time/3600:.2f} hours")
+    # print(f"Number of batches per epoch: {total_batches}")
+    # print(f"Total number of epochs: {opt.epoch}")
+    
+    # user_input = input("\nProceed with training? (y/n): ")
+    # if user_input.lower() != 'y':
+    #     print("Training cancelled")
+    #     return
 
     optimizer = t.optim.Adam(model.parameters(), lr=opt.lr)
     criterion = nn.CrossEntropyLoss()
     if opt.model_path:
-        model.load_state_dict(t.load(opt.model_path))
-    model.to(device)
+        state_dict = t.load(opt.model_path, map_location=device, weights_only=True)
+        model.load_state_dict(state_dict)
 
     loss_meter = meter.AverageValueMeter()
+    total_start_time = time.time()  # Track total training time
+    
     for epoch in range(opt.epoch):
+        epoch_start_time = time.time()  # Track epoch time
         loss_meter.reset()
+        print(f"\nEpoch {epoch+1}/{opt.epoch} - Total batches: {len(dataloader)}")
+        
         for ii, data_ in tqdm.tqdm(enumerate(dataloader)):
-            # data_ shape: [batch_size, maxlen] = [128, 125]
-            print(f"\nOriginal data_ shape: {data_.shape}")  # Should be [128, 125]
+            # Move data to device immediately after loading
+            data_ = data_.long().transpose(1, 0).contiguous().to(device)
             
             data_ = data_.long().transpose(1, 0).contiguous()
             # After transpose: shape becomes [maxlen, batch_size] = [125, 128]
@@ -232,7 +248,7 @@ def train(**kwargs):
             
             # 前向传播
             output, _ = model(input_)
-            print(f"output shape: {output.shape}")   # Should be [124 * 128, vocab_size]
+            # print(f"output shape: {output.shape}")   # Should be [124 * 128, vocab_size]
 
             # target.view(-1) flattens the target tensor from [124, 128] to [15872] (124*128)
             # This matches output shape [15872, vocab_size] for CrossEntropyLoss
@@ -271,8 +287,22 @@ def train(**kwargs):
 
             # Add non-visdom progress reporting
             elif (1 + ii) % opt.plot_every == 0:
-                print(f"Epoch: {epoch}, Batch: {ii}, Loss: {loss_meter.value()[0]:.4f}")
+                print(f"\nProgress: Batch {ii+1}/{len(dataloader)} ({(ii+1)/len(dataloader)*100:.1f}%)")
+                print(f"Current Loss: {loss_meter.value()[0]:.4f}")
 
+        # Calculate and print timing information after each epoch
+        epoch_time = time.time() - epoch_start_time
+        total_time = time.time() - total_start_time
+        remaining_epochs = opt.epoch - (epoch + 1)
+        estimated_remaining_time = (total_time / (epoch + 1)) * remaining_epochs
+        
+        print(f"\nEpoch {epoch+1} Summary:")
+        print(f"Time for this epoch: {epoch_time:.2f} seconds")
+        print(f"Average epoch time: {total_time/(epoch+1):.2f} seconds")
+        print(f"Estimated remaining time: {estimated_remaining_time/60:.2f} minutes")
+        print(f"Total time elapsed: {total_time/60:.2f} minutes")
+        
+        # Save model
         t.save(model.state_dict(), "%s_%s.pth" % (opt.model_prefix, epoch))
 
 
@@ -280,7 +310,6 @@ def gen(**kwargs):
     """
     提供命令行接口，用以生成相应的诗
     """
-
     for k, v in kwargs.items():
         setattr(opt, k, v)
 
@@ -289,11 +318,37 @@ def gen(**kwargs):
         print("Warning: CUDA not available, using CPU instead")
         opt.use_gpu = False
 
+    # First load the data to get vocabulary size
     data, word2ix, ix2word = get_data(opt)
+    vocab_size = len(word2ix)
+    print(f"Vocabulary size: {vocab_size}")
+    
+    # Print some example characters from the vocabulary
+    print("\nExample characters in vocabulary:")
+    sample_chars = list(word2ix.keys())[:20]  # First 20 characters
+    print(''.join(sample_chars))
+    
+    # Check if input characters are in vocabulary
+    invalid_chars = [char for char in opt.start_words if char not in word2ix]
+    if invalid_chars:
+        print(f"\nWarning: The following characters are not in the vocabulary: {''.join(invalid_chars)}")
+        print("Please use only classical Chinese characters that appear in Tang poetry.")
+        return
+    
+    # Then create the model with correct vocabulary size
     model = PoetryModel(len(word2ix), 128, 256)
+    
+    # Load the pretrained weights with weights_only=True to avoid the warning
     map_location = "cuda" if opt.use_gpu else "cpu"
-    state_dict = t.load(opt.model_path, map_location=map_location)
-    model.load_state_dict(state_dict)
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=FutureWarning)
+            state_dict = t.load(opt.model_path, map_location=map_location, weights_only=True)
+        model.load_state_dict(state_dict)
+        print("Model loaded successfully")
+    except Exception as e:
+        print(f"Error loading model: {e}")
+        return
 
     if opt.use_gpu:
         model.cuda()
@@ -304,9 +359,7 @@ def gen(**kwargs):
             start_words = opt.start_words
             prefix_words = opt.prefix_words if opt.prefix_words else None
         else:
-            start_words = opt.start_words.encode("ascii", "surrogateescape").decode(
-                "utf8"
-            )
+            start_words = opt.start_words.encode("ascii", "surrogateescape").decode("utf8")
             prefix_words = (
                 opt.prefix_words.encode("ascii", "surrogateescape").decode("utf8")
                 if opt.prefix_words

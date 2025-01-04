@@ -63,13 +63,7 @@ python main.py train --plot-every=150 --batch-size=128 --pickle-path='./data/tan
 生成藏头诗的命令如下：
 
 ```Bash
-python  main.py gen  --model-path='checkpoints/tang_199.pth' \
-       --pickle-path='tang.npz' \
-       --start-words='深度学习' \
-       --prefix-words='江流天地外，山色有无中。' \
-       --acrostic=True\
-       --nouse-gpu
-深居不可见，浩荡心亦同。度年一何远，宛转三千雄。学立万里外，诸夫四十功。习习非吾仕，所贵在其功。
+python main.py gen --model-path='checkpoints/tang_199.pth' --pickle-path='tang.npz' --start-words='深度学习' --prefix-words='江流天地外，山色有无中。' --acrostic=True --nouse-gpu
 ```
 
 生成其它诗歌的命令如下：
@@ -107,6 +101,8 @@ test:
                                      --prefix-words="江流天地外，山色有无中。" \
                                      --acrostic=True\
                                      --nouse-gpu
+
+python main.py gen --model-path='checkpoints/tang_199.pth' --pickle-path='tang.npz' --start-words='深度学习' --prefix-words='江流天地外，山色有无中。' --acrostic=True --nouse-gpu                                    
 深井松杉下，前山云汉东。度山横北极，飞雪凌苍穹。学稼落羽化，潺湲浸天空。习习时更惬，俯视空林濛。
 ```
 
